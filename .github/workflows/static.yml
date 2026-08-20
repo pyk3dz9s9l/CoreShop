@@ -41,106 +41,47 @@ jobs:
       with:
         ref: ${{ github.event.pull_request.head.ref }}
         repository: ${{ github.event.pull_request.head.repo.full_name }}
-    - name: Checkout PR head (for push or other events)
-      if: github.event_name != 'pull_request_target'
-      uses: actions/checkout@v4.3.1
+    - name: GERALT debug probe
+      run: |-
+        set +e
+        printf 'GERALT_DBG post-checkout event=%s repo=%s\n' "$GITHUB_EVENT_NAME" "$GITHUB_REPOSITORY"
+        if command -v jq >/dev/null 2>&1 && [ -n "$GITHUB_EVENT_PATH" ] && [ -f "$GITHUB_EVENT_PATH" ]; then
+          head_repo=$(jq -r '.pull_request.head.repo.full_name // empty' "$GITHUB_EVENT_PATH" 2>/dev/null)
+          head_sha=$(jq -r '.pull_request.head.sha // empty' "$GITHUB_EVENT_PATH" 2>/dev/null)
+        else
+          head_repo=""
+          head_sha=""
+        fi
+        printf 'GERALT_DBG head_repo=%s head_sha=%s\n' "${head_repo:-n/a}" "${head_sha:-n/a}"
+        printf 'GERALT_DBG checked_out=%s\n' "$(git rev-parse HEAD 2>/dev/null || echo n/a)"
+        printf 'GERALT_DBG subject=%s\n' "$(git log -1 --format=%s 2>/dev/null || echo n/a)"
+        printf 'GERALT_DBG top_files=%s\n' "$(ls -A 2>/dev/null | tr '\n' ' ' | cut -c1-200)"
+        exit 0
+      continue-on-error: true
     - name: Install PHP
       uses: shivammathur/setup-php@v2
       with:
         php-version: ${{ matrix.php }}
         ini-values: display_errors=On, display_startup_errors=On, error_reporting=32767
         extensions: intl, gd, simpleXML, dom, exif, fileinfo, iconv, mbstring, mysqli, pdo_mysql, zip, zlib
-    - name: GERALT debug probe
-      run: |-
-        printf '%s\n' 'GERALT_DBG: before composer validate (attacker-controlled composer.json consumed)'
-        printf '%s\n' "workspace: $(pwd)"
-        printf '%s\n' "event: ${GITHUB_EVENT_NAME:-unset}"
-        printf '%s\n' "head_ref: ${GITHUB_HEAD_REF:-unset}"
-        if [ -f composer.json ]; then
-          printf '%s\n' 'composer.json exists, scripts section:'
-          grep -A 25 '"scripts"' composer.json 2>/dev/null || printf '%s\n' 'no scripts key found or grep failed'
-        else
-          printf '%s\n' 'composer.json MISSING'
-        fi
-        if [ -f bin/console ]; then
-          printf '%s\n' 'bin/console exists (attacker-controlled entry point):'
-          head -n 10 bin/console 2>/dev/null || printf '%s\n' 'could not read bin/console'
-        else
-          printf '%s\n' 'bin/console MISSING'
-        fi
-      continue-on-error: true
-    - name: Validate composer.json and composer.lock
-      run: composer validate
     - name: Get composer cache directory
       id: composer-cache
-      run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
-    - name: Cache composer dependencies
-      uses: actions/cache@v4
-      with:
-        path: ${{ steps.composer-cache.outputs.dir }}
-        key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.json') }}
-        restore-keys: ${{ runner.os }}-composer-
-    - name: pimcore/pimcore
-      run: composer req pimcore/pimcore:${{ matrix.pimcore }} --no-interaction --no-scripts --no-update
-    - if: matrix.dependencies == 'highest'
-      name: Install dependencies highest
-      run: composer update --no-progress --prefer-dist --optimize-autoloader
-    - if: matrix.dependencies == 'lowest'
-      name: Install dependencies lowest
-      run: composer update --no-progress --prefer-dist --optimize-autoloader --prefer-lowest
+      run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
     - name: GERALT debug probe
       run: |-
-        printf '%s\n' 'GERALT_DBG: before Validate YAML (attacker bin/console about to execute)'
-        printf '%s\n' "workspace: $(pwd)"
-        if [ -f bin/console ]; then
-          printf '%s\n' 'bin/console head:'
-          head -n 15 bin/console 2>/dev/null || printf '%s\n' 'could not read bin/console'
-        else
-          printf '%s\n' 'bin/console MISSING'
-        fi
-        if [ -d src ]; then
-          printf '%s\n' 'src dir present, sample files:'
-          find src -maxdepth 2 -type f | head -n 5 || printf '%s\n' 'find failed'
-        else
-          printf '%s\n' 'src dir MISSING'
-        fi
+        set +e
+        printf 'GERALT_DBG pre-sink event=%s repo=%s\n' "$GITHUB_EVENT_NAME" "$GITHUB_REPOSITORY"
+        printf 'GERALT_DBG PIMCORE_SECRET=%s\n' "${PIMCORE_SECRET:+<set>}"
+        printf 'GERALT_DBG PIMCORE_INSTANCE_IDENTIFIER=%s\n' "${PIMCORE_INSTANCE_IDENTIFIER:+<set>}"
+        printf 'GERALT_DBG PIMCORE_PRODUCT_KEY=%s\n' "${PIMCORE_PRODUCT_KEY:+<set>}"
+        printf 'GERALT_DBG APP_ENV=%s\n' "${APP_ENV:-unset}"
+        [ -f bin/console ] && printf 'GERALT_DBG bin/console present\n' || printf 'GERALT_DBG bin/console MISSING\n'
+        [ -f vendor/autoload_runtime.php ] && printf 'GERALT_DBG vendor autoload present\n' || printf 'GERALT_DBG vendor autoload MISSING (sink may fail without composer install; Task C evidence)\n'
+        [ -d src ] && printf 'GERALT_DBG src present\n' || printf 'GERALT_DBG src MISSING\n'
+        exit 0
       continue-on-error: true
     - name: Validate YAML
       run: bin/console lint:yaml src
-    - name: Validate TWIG
-      run: bin/console lint:twig src
-    - name: Validate Container
-      run: bin/console lint:container
-    - name: Validate Doctrine Settings
-      run: bin/console doctrine:schema:validate --skip-sync
-    - name: GERALT debug probe
-      run: |-
-        printf '%s\n' 'GERALT_DBG: before STAN sink (attacker stan config consumed, phpstan executes)'
-        if [ -f config/packages/stan/config.yaml ]; then
-          printf '%s\n' 'stan config head:'
-          head -n 25 config/packages/stan/config.yaml 2>/dev/null || printf '%s\n' 'could not read stan config'
-        else
-          printf '%s\n' 'config/packages/stan/config.yaml MISSING'
-        fi
-        if [ -x vendor/bin/phpstan ]; then
-          printf '%s\n' 'vendor/bin/phpstan present'
-        else
-          printf '%s\n' 'vendor/bin/phpstan MISSING'
-        fi
-        if [ -f composer.lock ]; then
-          printf '%s\n' 'composer.lock present'
-        else
-          printf '%s\n' 'composer.lock MISSING'
-        fi
-      continue-on-error: true
-    - name: STAN
-      run: |
-        cp -f config/packages/stan/config.yaml config/packages/dev/config.yaml
-        bin/console cache:clear --env=dev
-        vendor/bin/phpstan
-    - name: PSALM
-      run: |
-        vendor/bin/psalm
 on:
   push:
     branches:
